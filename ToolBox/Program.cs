@@ -24,6 +24,7 @@ using QuantConnect.ToolBox.Benzinga;
 using QuantConnect.ToolBox.BitfinexDownloader;
 using QuantConnect.ToolBox.CoarseUniverseGenerator;
 using QuantConnect.ToolBox.CoinApiDataConverter;
+using QuantConnect.ToolBox.CoinApiDownloader;
 using QuantConnect.ToolBox.CryptoiqDownloader;
 using QuantConnect.ToolBox.DukascopyDownloader;
 using QuantConnect.ToolBox.EstimizeDataDownloader;
@@ -173,6 +174,11 @@ namespace QuantConnect.ToolBox
                             GetParameterOrExit(optionsObject, "destination-dir"),
                             GetParameterOrExit(optionsObject, "api-key")
                         );
+                        break;
+                    
+                    case "cadl":
+                    case "coinapidownloader":
+                        CoinApiDownloaderProgram.CoinApiDownloader(tickers, resolution, fromDate, toDate);
                         break;
 
                     default:

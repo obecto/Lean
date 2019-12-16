@@ -30,9 +30,12 @@ COPY ./Launcher/bin/Release /root/Lean/Launcher/bin/Release
 
 # Finally.
 WORKDIR /root/Lean/Launcher/bin/Release
-CMD [ "mono", "QuantConnect.Lean.Launcher.exe"] # Run app
+CMD mono QuantConnect.Lean.Launcher.exe $ARGS
 
 # Usage:
 # docker build -t quantconnect/lean:foundation -f DockerfileLeanFoundation .
 # docker build -t quantconnect/lean:algorithm -f Dockerfile .
 # docker run -v "(absolute to your data folder):/root/Lean/Data" quantconnect/lean:algorithm
+
+# Adapted usage:
+# sudo docker run -v ~/work/Lean/Data:/root/Lean/Data -e "ARGS=--config=../../../Data/config.json" quantconnect/lean:algorithm
