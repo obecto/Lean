@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -42,15 +43,31 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
 
             try
             {
+                Config.SetConfigurationFile("../../../Data/config.json");
+                Config.Reset();
+                
                 // mono QuantConnect.ToolBox.exe --app=CoinApiDownloader --tickers=ETHUSDT --resolution=Minute --from-date=20190101-00:00:00 --to-date=20190101-00:00:00
                 //var symbolObject = Symbol.Create(tickers[0], SecurityType.Crypto, exchange);
-                var symbolObject = Symbol.Create("ETHUSD", SecurityType.Crypto, "BINANCE");
+                var symbol = Symbol.Create("ETHUSD", SecurityType.Crypto, "BINANCE");
                 var dataKey = "BINANCE_SPOT_ETH_USDT";
                 
-                var apiKey = Config.Get("coinapi-api-key", "9A18C38F-6FF7-4949-8F3C-AE1E332BEE7F");
+                var apiKey = Config.Get("coinapi-api-key");
                 var dataFolderPath = Config.Get("data-directory", "../../../Data");
                 
-                DownloadData(apiKey, dataFolderPath, symbolObject, dataKey, startDate, endDate);
+                var coinApi = new CoinApiRestClient(apiKey);
+            
+                var counter = startDate;
+                while (counter <= endDate)
+                {
+                    Console.WriteLine($"--- Downloading data for {counter}");
+                
+                    DownloadData(counter, symbol, TickType.Trade, coinApi, dataKey, dataFolderPath);
+                    DownloadData(counter, symbol, TickType.Quote, coinApi, dataKey, dataFolderPath);
+                
+                    Console.WriteLine($"Finished processing data for {counter}");
+                    
+                    counter = counter.AddDays(1);
+                }
             }
             catch (Exception err)
             {
@@ -58,98 +75,138 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
             }
         }
 
-        private static void DownloadData(string apiKey, string dataFolderPath, Symbol symbolObject,
-            string dataKey, DateTime startDate, DateTime endDate)
+        private static void DownloadData(DateTime date, Symbol symbol, TickType tickType,
+            CoinApiRestClient coinApi, string dataKey, string dataFolderPath)
         {
-            var coinApi = new CoinApiRestClient(apiKey);
-            var counter = startDate;
-            while (counter <= endDate)
-            {
-                Console.WriteLine($"Downloading data for {counter}");
-                
-                DownloadTicks(TickType.Trade, counter, symbolObject, dataKey, dataFolderPath, coinApi);
-                DownloadTicks(TickType.Quote, counter, symbolObject, dataKey, dataFolderPath, coinApi);
-
-                counter = counter.AddDays(1);
-            }
-        }
-
-        private static void DownloadTicks(TickType tickType, DateTime date, Symbol symbolObject, string dataKey,
-            string dataFolderPath, CoinApiRestClient coinApi)
-        {
-            Console.WriteLine($"Generating {tickType} ticks");
+            var downloadBatchSize = 100;
+            var persistBatchSize = 10 * downloadBatchSize;
             
-            if (tickType != TickType.Trade && tickType != TickType.Quote)
-            {
-                throw new Exception($"Unknown tick '{tickType.ToStringInvariant()}'");
-            }
+            var aggregators = ConstructAggregators(tickType);
 
-            var ticks = new List<Tick>();
-            var consolidators = new List<TickAggregator>();
-
-            foreach (var resolution in new[] {Resolution.Second, Resolution.Minute, Resolution.Hour, Resolution.Daily})
+            var counter = 0;
+            var endDate = date.AddDays(1);
+            var cursorDate = date;
+            while (cursorDate < endDate)
             {
+                IEnumerable history;
+            
                 if (tickType == TickType.Trade)
                 {
-                    consolidators.Add(new TradeTickAggregator(resolution));
+                    history = coinApi.Trades_historical_data(dataKey, cursorDate, downloadBatchSize);
                 }
                 else if (tickType == TickType.Quote)
                 {
-                    consolidators.Add(new QuoteTickAggregator(resolution));
+                    history = coinApi.Quotes_historical_data(dataKey, cursorDate, downloadBatchSize);
                 }
-            }
+                else
+                {
+                    throw new Exception($"Unknown tick type '{tickType}'");
+                }
 
-            if (tickType == TickType.Trade)
-            {
-                var history = coinApi.Trades_historical_data(dataKey, date, date);
+                
                 foreach (var item in history)
                 {
-                    Tick tick = new Tick
+                    counter++;
+                    
+                    if (item is Trade)
                     {
-                        Symbol = symbolObject,
-                        Time = item.time_exchange,
-                        Value = item.price,
-                        Quantity = item.size,
-                        TickType = TickType.Trade
-                    };
-                    ticks.Add(tick);
-                    foreach (var consolidator in consolidators) 
-                        consolidator.Update(tick);
+                        cursorDate = ((Trade)item).time_coinapi;
+                    }
+                    else if (item is Quote)
+                    {
+                        cursorDate = ((Quote)item).time_coinapi;
+                    }
+                    else
+                    {
+                        throw new Exception($"Unknown data item '{item}'");
+                    }
+
+                    RegisterDataItem(item, dataKey, aggregators);
                 }
-            } 
-            else if (tickType == TickType.Quote)
-            {
-                var history = coinApi.Quotes_historical_data(dataKey, date, date);
-                foreach (var item in history)
+
+
+                if (cursorDate >= endDate || counter % persistBatchSize == 0)
                 {
-                    Tick tick = new Tick
-                    {
-                        Symbol = symbolObject,
-                        Time = item.time_exchange,
-                        AskPrice = item.ask_price,
-                        AskSize = item.ask_size,
-                        BidPrice = item.bid_price,
-                        BidSize = item.bid_size,
-                        TickType = TickType.Quote
-                    };
-                    ticks.Add(tick);
-                    foreach (var consolidator in consolidators) 
-                        consolidator.Update(tick);
+                    SerializeData(aggregators, symbol, dataFolderPath);
+                    Console.WriteLine($"Snapshot at {tickType} tick {counter} for {date}");
                 }
             }
             
-            Console.WriteLine($"Downloaded {ticks.Count} {tickType} ticks for {date}");
+            Console.WriteLine($"Persisted {counter} {tickType} ticks for {date}");
+        }
+        
+        private static List<TickAggregator> ConstructAggregators(TickType tickType)
+        {
+            var aggregators = new List<TickAggregator>();
 
-            var writer = new LeanDataWriter(Resolution.Tick, symbolObject, dataFolderPath, tickType);
-            writer.Write(ticks);
+            aggregators.Add(new IdentityTickAggregator(tickType));
 
-            foreach (var consolidator in consolidators)
+            var resolutions = new[] {Resolution.Minute, Resolution.Hour, Resolution.Daily};
+            foreach (var resolution in resolutions)
             {
-                writer = new LeanDataWriter(consolidator.Resolution, symbolObject, dataFolderPath, tickType);
+                if (tickType == TickType.Trade)
+                    
+                {
+                    aggregators.Add(new TradeTickAggregator(resolution));
+                }
+                else if (tickType == TickType.Quote)
+                {
+                    aggregators.Add(new QuoteTickAggregator(resolution));
+                }
+            }
+
+            return aggregators;
+        }
+
+        private static void RegisterDataItem(object item, Symbol symbol, List<TickAggregator> aggregators)
+        {
+            Tick tick;
+
+            if (item is Trade)
+            {
+                var tradeItem = (Trade)item;
+                tick = new Tick
+                {
+                    Symbol = symbol,
+                    Time = tradeItem.time_exchange,
+                    Value = tradeItem.price,
+                    Quantity = tradeItem.size,
+                    TickType = TickType.Trade
+                };
+            }
+            else if (item is Quote)
+            {
+                var quoteItem = (Quote) item;
+                tick = new Tick
+                {
+                    Symbol = symbol,
+                    Time = quoteItem.time_exchange,
+                    AskPrice = quoteItem.ask_price,
+                    AskSize = quoteItem.ask_size,
+                    BidPrice = quoteItem.bid_price,
+                    BidSize = quoteItem.bid_size,
+                    TickType = TickType.Quote
+                };
+            }
+            else
+            {
+                throw new Exception($"Unknown data item '{item}'");
+            }
+
+            foreach (var consolidator in aggregators)
+            {
+                consolidator.Update(tick);
+            }   
+        }
+        
+        private static void SerializeData(List<TickAggregator> aggregators, Symbol symbol, 
+            string dataFolderPath)
+        {
+            foreach (var consolidator in aggregators)
+            {
+                var writer = new LeanDataWriter(consolidator.Resolution, symbol, dataFolderPath, consolidator.TickType);
                 writer.Write(consolidator.Flush());
             }
-            
-            Console.WriteLine($"Data for {date} is persisted");
         }
     }
 }
