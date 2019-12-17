@@ -32,7 +32,7 @@ namespace QuantConnect.Python
     public class PandasData
     {
         private static dynamic _pandas;
-        private static dynamic _remapperFactory;
+        //private static dynamic _remapperFactory;
         private readonly static HashSet<string> _baseDataProperties = typeof(BaseData).GetProperties().ToHashSet(x => x.Name.ToLowerInvariant());
         private readonly static ConcurrentDictionary<Type, List<MemberInfo>> _membersByType = new ConcurrentDictionary<Type, List<MemberInfo>>();
 
@@ -61,205 +61,6 @@ namespace QuantConnect.Python
                 using (Py.GIL())
                 {
                     _pandas = Py.Import("pandas");
-
-                    // this python Remapper class will work as a proxy and adjust the
-                    // input to its methods using the provided 'mapper' callable object
-                    _remapperFactory = PythonEngine.ModuleFromString("remapper",
-                        @"import wrapt
-import pandas
-from clr import AddReference
-AddReference(""QuantConnect.Common"")
-from QuantConnect import *
-
-originalConcat = pandas.concat
-
-def PandasConcatWrapper(objs, axis=0, join='outer', join_axes=None, ignore_index=False, keys=None, levels=None, names=None, verify_integrity=False, sort=None, copy=True):
-    return Remapper(originalConcat(objs, axis, join, join_axes, ignore_index, keys, levels, names, verify_integrity, sort, copy))
-
-pandas.concat = PandasConcatWrapper
-
-class Remapper(wrapt.ObjectProxy):
-    def __init__(self, wrapped):
-        super(Remapper, self).__init__(wrapped)
-
-    # Our remapping method. Originally implemented in C# but some cases were not working
-    # correctly and using Py did the trick
-    def _self_mapper(self, key):
-        # this is to improve user experience, they can use Symbol
-        # as key and we convert it to string for pandas
-        if isinstance(key, Symbol):
-            key = str(key.ID)
-        # this is the most normal use case
-        elif isinstance(key, str):
-            tupleResult = SymbolCache.TryGetSymbol(key, None)
-            if tupleResult[0]:
-                return str(tupleResult[1].ID)
-
-        # this case is required to cover 'df.at[]'
-        elif isinstance(key, tuple) and 2 >= len(key) >= 1:
-            keyElement = key[0]
-
-            if isinstance(keyElement, tuple) and 2 >= len(keyElement) >= 1:
-                keyElement = keyElement[0]
-
-                if isinstance(keyElement, str):
-                    tupleResult = SymbolCache.TryGetSymbol(keyElement, None)
-                    if tupleResult[0]:
-                        result = str(tupleResult[1].ID)
-                        # tuples can not be modified in Py so we generate new ones
-                        if len(key[0]) == 1:
-                            firstTuple = (result,)
-                        else:
-                            firstTuple = (result, key[0][1])
-                        if len(key[1]) == 1:
-                            return (firstTuple,)
-                        else:
-                            return (firstTuple, key[1])
-        return key
-
-    def __contains__(self, key):
-        key = self._self_mapper(key)
-        return self.__wrapped__.__contains__(key)
-
-    def __getitem__(self, name):
-        name = self._self_mapper(name)
-        result = self.__wrapped__.__getitem__(name)
-
-        if isinstance(result, (pandas.Series, pandas.Index)):
-            # For these cases we wrap the result too. Can't apply the wrap around all
-            # results because it causes issues in pandas for some of our use cases
-            # specifically pandas timestamp type
-            return Remapper(result)
-        return result
-
-    def __setitem__(self, name, value):
-        name = self._self_mapper(name)
-        return self.__wrapped__.__setitem__(name, value)
-
-    def __delitem__(self, name):
-        name = self._self_mapper(name)
-        return self.__wrapped__.__delitem__(name)
-
-    # we wrap the result and input of 'xs'
-    def xs(self, key, axis=0, level=None, drop_level=True):
-        key = self._self_mapper(key)
-        result = self.__wrapped__.xs(key=key, axis=axis, level=level, drop_level=drop_level)
-        return Remapper(result)
-
-    def get(self, key, default=None):
-        key = self._self_mapper(key)
-        return self.__wrapped__.get(key=key, default=default)
-
-    # we wrap the result of 'unstack'
-    def unstack(self, level=-1, fill_value=None):
-        result = self.__wrapped__.unstack(level=level, fill_value=fill_value)
-        return Remapper(result)
-
-    def join(self, other, on=None, how='left', lsuffix='', rsuffix='', sort=False):
-        result = self.__wrapped__.join(other=other, on=on, how=how, lsuffix=lsuffix, rsuffix=rsuffix, sort=sort)
-        return Remapper(result)
-
-    def append(self, other, ignore_index=False, verify_integrity=False, sort=None):
-        result = self.__wrapped__.append(other=other, ignore_index=ignore_index, verify_integrity=verify_integrity, sort=sort)
-        return Remapper(result)
-
-    def merge(self, right, how='inner', on=None, left_on=None, right_on=None, left_index=False, right_index=False, sort=False, suffixes=('_x', '_y'), copy=True, indicator=False, validate=None):
-        result = self.__wrapped__.merge(right=right, how=how, on=on, left_on=left_on, right_on=right_on, left_index=left_index, right_index=right_index, sort=sort, suffixes=suffixes, copy=copy, indicator=indicator, validate=validate)
-        return Remapper(result)
-
-    # we wrap 'loc' to cover the: df.loc['SPY'] case
-    @property
-    def loc(self):
-        return Remapper(self.__wrapped__.loc)
-
-    @property
-    def ix(self):
-        return Remapper(self.__wrapped__.ix)
-
-    @property
-    def iloc(self):
-        return Remapper(self.__wrapped__.iloc)
-
-    @property
-    def at(self):
-        return Remapper(self.__wrapped__.at)
-
-    @property
-    def index(self):
-        return Remapper(self.__wrapped__.index)
-
-    @property
-    def levels(self):
-        return Remapper(self.__wrapped__.levels)
-
-    # we wrap the following properties so that when 'unstack', 'loc' are called we wrap them
-    @property
-    def open(self):
-        return Remapper(self.__wrapped__.open)
-    @property
-    def high(self):
-        return Remapper(self.__wrapped__.high)
-    @property
-    def close(self):
-        return Remapper(self.__wrapped__.close)
-    @property
-    def low(self):
-        return Remapper(self.__wrapped__.low)
-    @property
-    def lastprice(self):
-        return Remapper(self.__wrapped__.lastprice)
-    @property
-    def volume(self):
-        return Remapper(self.__wrapped__.volume)
-    @property
-    def askopen(self):
-        return Remapper(self.__wrapped__.askopen)
-    @property
-    def askhigh(self):
-        return Remapper(self.__wrapped__.askhigh)
-    @property
-    def asklow(self):
-        return Remapper(self.__wrapped__.asklow)
-    @property
-    def askclose(self):
-        return Remapper(self.__wrapped__.askclose)
-    @property
-    def askprice(self):
-        return Remapper(self.__wrapped__.askprice)
-    @property
-    def asksize(self):
-        return Remapper(self.__wrapped__.asksize)
-    @property
-    def quantity(self):
-        return Remapper(self.__wrapped__.quantity)
-    @property
-    def suspicious(self):
-        return Remapper(self.__wrapped__.suspicious)
-    @property
-    def bidopen(self):
-        return Remapper(self.__wrapped__.bidopen)
-    @property
-    def bidhigh(self):
-        return Remapper(self.__wrapped__.bidhigh)
-    @property
-    def bidlow(self):
-        return Remapper(self.__wrapped__.bidlow)
-    @property
-    def bidclose(self):
-        return Remapper(self.__wrapped__.bidclose)
-    @property
-    def bidprice(self):
-        return Remapper(self.__wrapped__.bidprice)
-    @property
-    def bidsize(self):
-        return Remapper(self.__wrapped__.bidsize)
-    @property
-    def exchange(self):
-        return Remapper(self.__wrapped__.exchange)
-    @property
-    def openinterest(self):
-        return Remapper(self.__wrapped__.openinterest)
-").GetAttr("Remapper");
                 }
             }
 
@@ -545,11 +346,11 @@ class Remapper(wrapt.ObjectProxy):
         }
 
         /// <summary>
-        /// Will wrap the provided pandas data frame using the <see cref="_remapperFactory"/>
+        /// Will wrap the provided pandas data frame using the _remapperFactory
         /// </summary>
         internal static dynamic ApplySymbolMapper(dynamic pandasDataFrame)
         {
-            return _remapperFactory.Invoke(pandasDataFrame);
+            return pandasDataFrame;
         }
     }
 }
