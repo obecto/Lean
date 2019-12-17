@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using CoinAPI.REST.V1;
 using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
@@ -41,80 +42,114 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
 
             try
             {
-                var dataDirectory = Config.Get("data-directory", "../../../Data");
-                var symbolObject = Symbol.Create(tickers[0], SecurityType.Crypto, Market.GDAX);
-
-                var tradeData = new List<BaseData>();
-                var quoteData = new List<BaseData>();
-                using(var reader = new StreamReader(Path.Combine(dataDirectory, "candles.csv")))
-                {
-                    while (!reader.EndOfStream)
-                    {
-                        var line = reader.ReadLine();
-                        var values = line?.Split(',').Select(x => Convert.ToDecimal(x, CultureInfo.CurrentCulture)).ToArray();
-
-                        //0: 220.59, price_open
-                        //1: 221.13, price_close
-                        //2: 229.73006, price_high
-                        //3: 220.17, price_low
-                        //4: 358041.91919, volume_traded
-                        //5: 1564942800.0
-                        
-                        /*
-                        csv.write(f"{round(float(" +
-                            "candle['price_open']),5)},{round(float(" +
-                            "candle['price_close']),5)},{round(float(" +
-                            "candle['price_high']),5)},{round(float(" +
-                            "candle['price_low']),5)},{round(float(" +
-                            "candle['volume_traded']),5)},{" +
-                            "unix_t}\n")
-                        */
-                        
-                        var tradeBar = new TradeBar(UnixTimestampToDateTime(Convert.ToDouble(values[5])), symbolObject, 
-                            values[0], values[2], values[3], values[1], values[4], TimeSpan.FromMinutes(1));
-                        tradeData.Add(tradeBar);
-                        
-                        quoteData.Add(new QuoteBar(tradeBar.Time, symbolObject, 
-                            tradeBar, tradeBar.Close, tradeBar, tradeBar.Close, TimeSpan.FromMinutes(1)));
-                        
-                        // mono QuantConnect.ToolBox.exe --app=CoinApiDownloader --tickers=ETHUSDT --resolution=Minute --from-date=20190101-00:00:00 --to-date=20190101-00:00:00
-                    }
-                }
+                // mono QuantConnect.ToolBox.exe --app=CoinApiDownloader --tickers=ETHUSDT --resolution=Minute --from-date=20190101-00:00:00 --to-date=20190101-00:00:00
+                //var symbolObject = Symbol.Create(tickers[0], SecurityType.Crypto, exchange);
+                var symbolObject = Symbol.Create("ETHUSD", SecurityType.Crypto, "BINANCE");
+                var dataKey = "BINANCE_SPOT_ETH_USDT";
                 
-                Console.WriteLine(tradeData.ToString());
+                var apiKey = Config.Get("coinapi-api-key", "9A18C38F-6FF7-4949-8F3C-AE1E332BEE7F");
+                var dataFolderPath = Config.Get("data-directory", "../../../Data");
                 
-                var writer = new LeanDataWriter(Resolution.Minute, symbolObject, dataDirectory, TickType.Trade);
-                writer.Write(tradeData);
-                
-                writer = new LeanDataWriter(Resolution.Minute, symbolObject, dataDirectory, TickType.Quote);
-                writer.Write(quoteData);
-                
-                /*
-                var downloader = new CoinApiDownloader(exchange);
-
-                foreach (var ticker in tickers)
-                {
-                    // Download the data
-                    var symbolObject = Symbol.Create(ticker, SecurityType.Crypto, exchange);
-                    var data = downloader.Get(symbolObject, Resolution.Tick, startDate, endDate);
-
-                    // Save the data
-                    var writer = new LeanDataWriter(Resolution.Tick, symbolObject, dataDirectory, TickType.Quote);
-                    writer.Write(data);
-                }
-                */
+                DownloadData(apiKey, dataFolderPath, symbolObject, dataKey, startDate, endDate);
             }
             catch (Exception err)
             {
                 Log.Error(err);
             }
         }
-        
-        public static DateTime UnixTimestampToDateTime(double unixTime)
+
+        private static void DownloadData(string apiKey, string dataFolderPath, Symbol symbolObject,
+            string dataKey, DateTime startDate, DateTime endDate)
         {
-            DateTime unixStart = new DateTime(1970, 1, 1, 0, 0, 0, 0, System.DateTimeKind.Utc);
-            long unixTimeStampInTicks = (long) (unixTime * TimeSpan.TicksPerSecond);
-            return new DateTime(unixStart.Ticks + unixTimeStampInTicks, System.DateTimeKind.Utc);
+            var coinApi = new CoinApiRestClient(apiKey);
+            var counter = startDate;
+            while (counter <= endDate)
+            {
+                Console.WriteLine($"Downloading data for {counter}");
+                
+                DownloadTicks(TickType.Trade, counter, symbolObject, dataKey, dataFolderPath, coinApi);
+                DownloadTicks(TickType.Quote, counter, symbolObject, dataKey, dataFolderPath, coinApi);
+
+                counter = counter.AddDays(1);
+            }
+        }
+
+        private static void DownloadTicks(TickType tickType, DateTime date, Symbol symbolObject, string dataKey,
+            string dataFolderPath, CoinApiRestClient coinApi)
+        {
+            Console.WriteLine($"Generating {tickType} ticks");
+            
+            if (tickType != TickType.Trade && tickType != TickType.Quote)
+            {
+                throw new Exception($"Unknown tick '{tickType.ToStringInvariant()}'");
+            }
+
+            var ticks = new List<Tick>();
+            var consolidators = new List<TickAggregator>();
+
+            foreach (var resolution in new[] {Resolution.Second, Resolution.Minute, Resolution.Hour, Resolution.Daily})
+            {
+                if (tickType == TickType.Trade)
+                {
+                    consolidators.Add(new TradeTickAggregator(resolution));
+                }
+                else if (tickType == TickType.Quote)
+                {
+                    consolidators.Add(new QuoteTickAggregator(resolution));
+                }
+            }
+
+            if (tickType == TickType.Trade)
+            {
+                var history = coinApi.Trades_historical_data(dataKey, date, date);
+                foreach (var item in history)
+                {
+                    Tick tick = new Tick
+                    {
+                        Symbol = symbolObject,
+                        Time = item.time_exchange,
+                        Value = item.price,
+                        Quantity = item.size,
+                        TickType = TickType.Trade
+                    };
+                    ticks.Add(tick);
+                    foreach (var consolidator in consolidators) 
+                        consolidator.Update(tick);
+                }
+            } 
+            else if (tickType == TickType.Quote)
+            {
+                var history = coinApi.Quotes_historical_data(dataKey, date, date);
+                foreach (var item in history)
+                {
+                    Tick tick = new Tick
+                    {
+                        Symbol = symbolObject,
+                        Time = item.time_exchange,
+                        AskPrice = item.ask_price,
+                        AskSize = item.ask_size,
+                        BidPrice = item.bid_price,
+                        BidSize = item.bid_size,
+                        TickType = TickType.Quote
+                    };
+                    ticks.Add(tick);
+                    foreach (var consolidator in consolidators) 
+                        consolidator.Update(tick);
+                }
+            }
+            
+            Console.WriteLine($"Downloaded {ticks.Count} {tickType} ticks for {date}");
+
+            var writer = new LeanDataWriter(Resolution.Tick, symbolObject, dataFolderPath, tickType);
+            writer.Write(ticks);
+
+            foreach (var consolidator in consolidators)
+            {
+                writer = new LeanDataWriter(consolidator.Resolution, symbolObject, dataFolderPath, tickType);
+                writer.Write(consolidator.Flush());
+            }
+            
+            Console.WriteLine($"Data for {date} is persisted");
         }
     }
 }
