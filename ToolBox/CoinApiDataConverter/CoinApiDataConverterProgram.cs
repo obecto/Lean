@@ -26,9 +26,16 @@ namespace QuantConnect.ToolBox.CoinApiDataConverter
     {
         public static void CoinApiDataProgram(string date, string market, string rawDataFolder, string destinationFolder)
         {
-            var processingDate = DateTime.ParseExact(date, DateFormat.EightCharacter, CultureInfo.InvariantCulture);
-            var converter  = new CoinApiDataConverter(processingDate, market, rawDataFolder, destinationFolder);
-            converter.Run();
+            if (date == "import" || String.IsNullOrEmpty(date) || String.IsNullOrEmpty(market))
+            {
+                CoinApiTradeBarsConverter.ImportCsv(rawDataFolder, destinationFolder);
+            }
+            else
+            {
+                var processingDate = DateTime.ParseExact(date, DateFormat.EightCharacter, CultureInfo.InvariantCulture);
+                var converter  = new CoinApiDataConverter(processingDate, market, rawDataFolder, destinationFolder);
+                converter.Run();
+            }
         }
     }
 }

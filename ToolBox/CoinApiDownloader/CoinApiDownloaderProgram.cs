@@ -43,16 +43,17 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
 
             try
             {
-                Config.SetConfigurationFile("../../../Data/config.json");
-                Config.Reset();
-                
                 // mono QuantConnect.ToolBox.exe --app=CoinApiDownloader --tickers=ETHUSDT --resolution=Minute --from-date=20190101-00:00:00 --to-date=20190101-00:00:00
                 //var symbolObject = Symbol.Create(tickers[0], SecurityType.Crypto, exchange);
                 var symbol = Symbol.Create("ETHUSD", SecurityType.Crypto, "BINANCE");
                 var dataKey = "BINANCE_SPOT_ETH_USDT";
+                var defaultDataFolderPath = "../../../Data";
+                
+                Config.SetConfigurationFile($"{defaultDataFolderPath}/config.json");
+                Config.Reset();
                 
                 var apiKey = Config.Get("coinapi-api-key");
-                var dataFolderPath = Config.Get("data-directory", "../../../Data");
+                var dataFolderPath = Config.Get("data-directory", defaultDataFolderPath);
                 
                 var coinApi = new CoinApiRestClient(apiKey);
             
@@ -79,7 +80,6 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
             CoinApiRestClient coinApi, string dataKey, string dataFolderPath)
         {
             var downloadBatchSize = 100;
-            var persistBatchSize = 10 * downloadBatchSize;
             
             var aggregators = ConstructAggregators(tickType);
 
@@ -95,14 +95,14 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
                     history = coinApi.Trades_historical_data(dataKey, cursorDate, downloadBatchSize);
                 }
                 else if (tickType == TickType.Quote)
-                {
+                { 
+                    //history = coinApi.Orderbooks_historical_data(dataKey, "1min", cursorDate, downloadBatchSize);
                     history = coinApi.Quotes_historical_data(dataKey, cursorDate, downloadBatchSize);
                 }
                 else
                 {
                     throw new Exception($"Unknown tick type '{tickType}'");
                 }
-
                 
                 foreach (var item in history)
                 {
@@ -120,16 +120,16 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
                     {
                         throw new Exception($"Unknown data item '{item}'");
                     }
+                    
+                    if (cursorDate >= endDate)
+                    {
+                        SerializeData(aggregators, symbol, dataFolderPath);
+                        Console.WriteLine($"Snapshot at {tickType} tick {counter} for {date}");
+                    }
 
                     RegisterDataItem(item, dataKey, aggregators);
                 }
 
-
-                if (cursorDate >= endDate || counter % persistBatchSize == 0)
-                {
-                    SerializeData(aggregators, symbol, dataFolderPath);
-                    Console.WriteLine($"Snapshot at {tickType} tick {counter} for {date}");
-                }
             }
             
             Console.WriteLine($"Persisted {counter} {tickType} ticks for {date}");
@@ -193,6 +193,15 @@ namespace QuantConnect.ToolBox.CoinApiDownloader
                 throw new Exception($"Unknown data item '{item}'");
             }
 
+            /*
+            var tradeBar = new TradeBar(UnixTimestampToDateTime(Convert.ToDouble(values[5])), symbolObject, 
+                values[0], values[2], values[3], values[1], values[4], TimeSpan.FromMinutes(1));
+            tradeData.Add(tradeBar);
+                        
+            quoteData.Add(new QuoteBar(tradeBar.Time, symbolObject, 
+                tradeBar, tradeBar.Close, tradeBar, tradeBar.Close, TimeSpan.FromMinutes(1)));
+            */
+            
             foreach (var consolidator in aggregators)
             {
                 consolidator.Update(tick);

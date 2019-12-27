@@ -260,9 +260,8 @@
     <Compile Include="CoinApiDataConverter\CoinApiDataConverter.cs" />
     <Compile Include="CoinApiDataConverter\CoinApiDataReader.cs" />
     <Compile Include="CoinApiDataConverter\CoinApiEntryData.cs" />
-    <Compile Include="CoinApiDownloader\CoinApiDownloader.cs" />
+    <Compile Include="CoinApiDataConverter\CoinApiTradeBarsConverter.cs" />
     <Compile Include="CoinApiDownloader\CoinApiDownloaderProgram.cs" />
-    <Compile Include="CoinApiDownloader\ttt.cs" />
     <Compile Include="CoinApi\CoinApiSymbol.cs" />
     <Compile Include="CoinApi\CoinApiSymbolMapper.cs" />
     <Compile Include="CoinApi\CoinApiDataQueueHandler.cs" />
